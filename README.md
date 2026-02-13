@@ -70,8 +70,8 @@ const result = await sdk.run({
 
 ## Full sample apps
 
-- `examples/express-chat` - Express server + Tailwind widget UI
-- `examples/nuxt-chat` - Nuxt 3 app + server API route + Tailwind
-- `examples/sveltekit-chat` - SvelteKit app + server endpoint + Tailwind
+- `../examples/lyre-ai-agents-node/express-chat` - Express server + Tailwind widget UI
+- `../examples/lyre-ai-agents-node/nuxt-chat` - Nuxt 3 app + server API route + Tailwind
+- `../examples/lyre-ai-agents-node/sveltekit-chat` - SvelteKit app + server endpoint + Tailwind
 
 All three use `@lyre/ai-agents` in `proxy` mode against Axis backend so conversation/message/cost metadata stays in Axis.
