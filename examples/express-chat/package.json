@@ -1,0 +1,17 @@
+{
+  "name": "lyre-ai-agents-express-chat",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build:css && node server.mjs",
+    "build:css": "tailwindcss -i ./src/styles.css -o ./public/styles.css --minify"
+  },
+  "dependencies": {
+    "@lyre/ai-agents": "file:../..",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

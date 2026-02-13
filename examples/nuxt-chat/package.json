@@ -1,0 +1,17 @@
+{
+  "name": "lyre-ai-agents-nuxt-chat",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "preview": "nuxt preview"
+  },
+  "dependencies": {
+    "@lyre/ai-agents": "file:../..",
+    "nuxt": "^3.16.0"
+  },
+  "devDependencies": {
+    "@nuxtjs/tailwindcss": "^6.13.2"
+  }
+}

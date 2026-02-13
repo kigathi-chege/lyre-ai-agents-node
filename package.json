@@ -1,0 +1,17 @@
+{
+  "name": "@lyre/ai-agents",
+  "version": "0.1.0",
+  "description": "Forward-only Agents/Bots SDK on top of OpenAI Responses API.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "dependencies": {
+    "openai": "^4.100.0"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "lyre-ai-agents-sveltekit-chat",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build && npm run prepack",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@lyre/ai-agents": "file:../..",
+    "@sveltejs/adapter-auto": "^3.3.1",
+    "@sveltejs/kit": "^2.51.0",
+    "svelte": "^5.22.0"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.2",
+    "vite": "^6.3.0"
+  }
+}
