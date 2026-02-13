@@ -1,51 +1,134 @@
 <script lang="ts">
-  type ChatMessage = { role: 'assistant' | 'user'; text: string };
+  type ChatMessage = { role: "assistant" | "user"; text: string };
 
   let isOpen = false;
   let isSending = false;
-  let input = '';
-  let messages: ChatMessage[] = [{ role: 'assistant', text: 'Hi, how can I help you today?' }];
+  let input = "";
+  let useStreaming = true;
+  let statusText = "";
+  let lastReplyingTo: string | null = null;
+  let messages: ChatMessage[] = [{ role: "assistant", text: "Hi, how can I help you today?" }];
   let conversationId: number | null = null;
 
-  if (typeof localStorage !== 'undefined') {
-    conversationId = Number(localStorage.getItem('sveltekit_chat_conversation_id')) || null;
+  if (typeof localStorage !== "undefined") {
+    conversationId = Number(localStorage.getItem("sveltekit_chat_conversation_id")) || null;
   }
 
   async function sendMessage() {
     const text = input.trim();
     if (!text || isSending) return;
 
-    input = '';
-    messages = [...messages, { role: 'user', text }];
+    input = "";
+    messages = [...messages, { role: "user", text }];
     isSending = true;
+    statusText = "Preprocessing context...";
 
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          conversation_id: conversationId,
-          metadata: { session_source: 'widget' },
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        messages = [...messages, { role: 'assistant', text: data?.message || 'Request failed.' }];
-        return;
+      if (useStreaming) {
+        await sendStream(text);
+      } else {
+        await sendRun(text);
       }
-
-      if (data?.conversation_id) {
-        conversationId = Number(data.conversation_id);
-        localStorage.setItem('sveltekit_chat_conversation_id', String(conversationId));
-      }
-
-      messages = [...messages, { role: 'assistant', text: data?.output_text || 'No response text returned.' }];
     } catch (error: any) {
-      messages = [...messages, { role: 'assistant', text: error?.message || 'Network error.' }];
+      messages = [...messages, { role: "assistant", text: error?.message || "Network error." }];
     } finally {
       isSending = false;
+      statusText = "";
+    }
+  }
+
+  async function sendRun(text: string) {
+    statusText = "Calling model...";
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: text,
+        conversation_id: conversationId,
+        replying_to: lastReplyingTo,
+        metadata: { session_source: "widget" },
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      messages = [...messages, { role: "assistant", text: data?.message || "Request failed." }];
+      return;
+    }
+
+    if (data?.conversation_id) {
+      conversationId = Number(data.conversation_id);
+      localStorage.setItem("sveltekit_chat_conversation_id", String(conversationId));
+    }
+
+    if (data?.response_id) {
+      lastReplyingTo = data.response_id;
+    } else if (data?.output_message_id) {
+      lastReplyingTo = data.output_message_id;
+    }
+
+    messages = [...messages, { role: "assistant", text: data?.output_text || "No response text returned." }];
+  }
+
+  async function sendStream(text: string) {
+    const response = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: text,
+        conversation_id: conversationId,
+        replying_to: lastReplyingTo,
+        metadata: { session_source: "widget" },
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      const body = await response.text();
+      throw new Error(body || "Streaming request failed.");
+    }
+
+    let assistantIndex = messages.length;
+    messages = [...messages, { role: "assistant", text: "" }];
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let splitIndex;
+      while ((splitIndex = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, splitIndex);
+        buffer = buffer.slice(splitIndex + 2);
+
+        const eventMatch = frame.match(/^event:\s*(.+)$/m);
+        const dataMatch = frame.match(/^data:\s*(.+)$/m);
+        if (!eventMatch || !dataMatch) continue;
+
+        const eventType = eventMatch[1].trim();
+        let payload: any = {};
+        try {
+          payload = JSON.parse(dataMatch[1]);
+        } catch {
+          payload = {};
+        }
+
+        if (eventType === "status") {
+          statusText = payload?.text || "Working...";
+        } else if (eventType === "delta") {
+          const chunk = payload?.text || "";
+          messages[assistantIndex].text += chunk;
+          messages = [...messages];
+        } else if (eventType === "done") {
+          statusText = "";
+        } else if (eventType === "error") {
+          messages[assistantIndex].text = payload?.message || "Streaming failed.";
+          messages = [...messages];
+        }
+      }
     }
   }
 </script>
@@ -72,6 +155,25 @@
     <div class="flex flex-col space-y-1.5 pb-6">
       <h2 class="text-lg font-semibold tracking-tight">Chatbot</h2>
       <p class="text-sm leading-3 text-[#6b7280]">Powered by Lyre AI Agents</p>
+      <div class="mt-3 flex items-center gap-2 text-xs">
+        <button
+          type="button"
+          class={`rounded px-2 py-1 ${useStreaming ? "bg-black text-white" : "bg-slate-100 text-slate-700"}`}
+          on:click={() => (useStreaming = true)}
+        >
+          Stream
+        </button>
+        <button
+          type="button"
+          class={`rounded px-2 py-1 ${!useStreaming ? "bg-black text-white" : "bg-slate-100 text-slate-700"}`}
+          on:click={() => (useStreaming = false)}
+        >
+          Run
+        </button>
+      </div>
+      {#if statusText}
+        <p class="mt-2 text-xs text-slate-500">{statusText}</p>
+      {/if}
     </div>
 
     <div class="h-[474px] overflow-y-auto pr-4">

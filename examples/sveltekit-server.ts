@@ -1,6 +1,7 @@
-import { createClient } from '@lyre/ai-agents';
+import { createClient } from "@lyre/ai-agents";
+import { env } from "$env/dynamic/private";
 
-const sdk = createClient({ apiKey: process.env.OPENAI_API_KEY });
+const sdk = createClient({ apiKey: env.OPENAI_API_KEY });
 
 export async function POST({ request }) {
   const body = await request.json();
@@ -10,5 +11,7 @@ export async function POST({ request }) {
     conversation_id: body.conversation_id,
   });
 
-  return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+  return new Response(JSON.stringify(result), {
+    headers: { "content-type": "application/json" },
+  });
 }
