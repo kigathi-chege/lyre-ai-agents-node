@@ -1,17 +1,17 @@
-# @lyre/ai-agents
+# @kigathi/ai-agents
 
 Unified Agents/Bots SDK for Responses API.
 
 ## Install
 
 ```bash
-npm install @lyre/ai-agents
+npm install @kigathi/ai-agents
 ```
 
 ## Direct OpenAI mode
 
 ```js
-import { createClient } from '@lyre/ai-agents';
+import { createClient } from '@kigathi/ai-agents';
 
 const sdk = createClient({
   apiKey: process.env.OPENAI_API_KEY,
@@ -74,13 +74,13 @@ const result = await sdk.run({
 - `../examples/lyre-ai-agents-node/nuxt-chat` - Nuxt 3 app + server API route + Tailwind
 - `../examples/lyre-ai-agents-node/sveltekit-chat` - SvelteKit app + server endpoint + Tailwind
 
-All three use `@lyre/ai-agents` in `proxy` mode against Axis backend so conversation/message/cost metadata stays in Axis.
+All three use `@kigathi/ai-agents` in `proxy` mode against Axis backend so conversation/message/cost metadata stays in Axis.
 
 ## Publishing to npm
 
 This package is configured for public publishing as a scoped package via:
 
-- `name: @lyre/ai-agents`
+- `name: @kigathi/ai-agents`
 - `publishConfig.access: public`
 
 Before the first publish, make sure you:
