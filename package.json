@@ -3,14 +3,38 @@
   "version": "0.1.0",
   "description": "Forward-only Agents/Bots SDK on top of OpenAI Responses API.",
   "type": "module",
+  "sideEffects": false,
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "files": [
     "src",
     "README.md"
   ],
+  "keywords": [
+    "openai",
+    "agents",
+    "bots",
+    "responses-api",
+    "sdk",
+    "ai"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kigathi-chege/lyre-ai-agents-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kigathi-chege/lyre-ai-agents-node/issues"
+  },
+  "homepage": "https://github.com/kigathi-chege/lyre-ai-agents-node#readme",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "openai": "^4.100.0"
   }

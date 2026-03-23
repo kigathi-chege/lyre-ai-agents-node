@@ -5,7 +5,7 @@ Unified Agents/Bots SDK for Responses API.
 ## Install
 
 ```bash
-npm install @lyre/ai-agents openai
+npm install @lyre/ai-agents
 ```
 
 ## Direct OpenAI mode
@@ -75,3 +75,17 @@ const result = await sdk.run({
 - `../examples/lyre-ai-agents-node/sveltekit-chat` - SvelteKit app + server endpoint + Tailwind
 
 All three use `@lyre/ai-agents` in `proxy` mode against Axis backend so conversation/message/cost metadata stays in Axis.
+
+## Publishing to npm
+
+This package is configured for public publishing as a scoped package via:
+
+- `name: @lyre/ai-agents`
+- `publishConfig.access: public`
+
+Before the first publish, make sure you:
+
+1. Pick and add a license file.
+2. Log in with `npm login`.
+3. Run `npm pack --dry-run` to inspect the publish artifact.
+4. Publish with `npm publish`.
