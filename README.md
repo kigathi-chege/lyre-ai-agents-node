@@ -23,6 +23,7 @@ const sdk = createClient(config);
 sdk.registerTool(tool);
 sdk.createAgent(agent);
 const result = await sdk.run(params);
+const speech = await sdk.tts.speak({ text: "Hello world" });
 ```
 
 ## Modes
@@ -346,6 +347,98 @@ for await (const delta of sdk.runStream({
 }
 ```
 
+### 6. Text to speech for read-aloud
+
+Fastest setup (no backend endpoint required): browser-native read-aloud + word highlighting.
+
+```js
+import { attachReadAloud } from "@kigathi/ai-agents";
+
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+});
+```
+
+Defaults are built in and can be customized:
+
+```js
+import { attachReadAloud, READ_ALOUD_DEFAULTS } from "@kigathi/ai-agents/browser";
+
+console.log(READ_ALOUD_DEFAULTS);
+
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  instructions: "Custom narration instructions...",
+  speechOptions: {
+    voiceName: "Samantha", // default
+    lang: "en-US",         // default
+    rate: 0.96,            // default
+    pitch: 1.0,            // default
+    volume: 1.0,           // default
+  },
+  highlight: {
+    mode: "span",              // default ("css" is also supported)
+    color: "#fde68a",
+    textColor: "#0f172a",
+    radius: "0.6em",
+    padding: "0.04em 0.24em",
+  },
+});
+```
+
+Optional speech tuning in browser mode:
+
+```js
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  speechOptions: {
+    lang: "en-US",
+    rate: 1,
+    pitch: 1,
+    volume: 1,
+    voiceName: "Samantha",
+  },
+});
+```
+
+Server-side OpenAI TTS (higher quality voice + model control):
+
+```js
+const speech = await sdk.tts.speak({
+  text: "This is a quick read-aloud example.",
+  voice: "alloy",
+  model: "gpt-4o-mini-tts",
+  format: "mp3",
+});
+
+console.log(speech.audio_base64);
+console.log(speech.words);
+```
+
+If you want browser `attachReadAloud()` to use OpenAI-generated audio/timings, pass an endpoint:
+
+```js
+import { attachReadAloud } from "@kigathi/ai-agents";
+
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  endpoint: "/api/read-aloud",
+});
+```
+
+Add a highlight style:
+
+```css
+::highlight(readaloud-active) {
+  background: #fde68a;
+  color: inherit;
+}
+```
+
 ## Complete minimal working example
 
 ```js
@@ -384,6 +477,56 @@ const result = await sdk.run({
 });
 
 console.log(result.output_text);
+```
+
+## Complete read-aloud example (no endpoint)
+
+```html
+<article id="blog-content">
+  <p>This package can now read blog content aloud.</p>
+  <p>Words are highlighted without rewriting your DOM.</p>
+</article>
+
+<button id="read-aloud-trigger">Play/Pause</button>
+```
+
+```js
+import { attachReadAloud } from "@kigathi/ai-agents";
+
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+});
+```
+
+## Optional OpenAI-backed read-aloud endpoint
+
+```js
+import express from "express";
+import { createClient } from "@kigathi/ai-agents";
+
+const app = express();
+app.use(express.json({ limit: "2mb" }));
+
+const sdk = createClient({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+app.post("/api/read-aloud", async (req, res) => {
+  try {
+    const { text } = req.body || {};
+    const speech = await sdk.tts.speak({
+      text,
+      voice: "alloy",
+      model: "gpt-4o-mini-tts",
+      format: "mp3",
+    });
+
+    res.json(speech);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Failed to generate read-aloud audio." });
+  }
+});
 ```
 
 ## Complete proxy example
@@ -467,3 +610,6 @@ All three use `@kigathi/ai-agents` in direct mode with backend persistence so Op
 - In direct mode with `backendUrl`, the SDK still calls OpenAI directly, then asynchronously persists messages and tool events to your backend.
 - You can pass either an agent name/id or a full agent object to `run()`.
 - If proxy mode cannot find a local agent, it will try to resolve the agent from the backend.
+- `sdk.tts.speak()` is direct-mode only (requires `apiKey`) and returns `audio_base64`, `mime_type`, and optional word timings.
+- `attachReadAloud()` works without any endpoint by default (browser speech synthesis) and does not mutate your content DOM.
+- `attachReadAloud({ endpoint })` switches to server/OpenAI-backed audio + timestamps.

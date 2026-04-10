@@ -6,7 +6,9 @@
   "sideEffects": false,
   "main": "src/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./browser": "./src/browser/readaloud.js",
+    "./sanitize": "./src/sanitize.js"
   },
   "engines": {
     "node": ">=18"
