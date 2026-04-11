@@ -8,10 +8,16 @@ export async function getOpenAIClient(client) {
   }
 
   const OpenAI = await resolveOpenAIConstructor();
+  const isBrowser =
+    typeof window !== "undefined" && typeof document !== "undefined";
   client.openai = new OpenAI({
     apiKey: client.config.apiKey,
     organization: client.config.orgId,
     project: client.config.projectId,
+    ...(Number.isFinite(Number(client.config.maxRetries))
+      ? { maxRetries: Math.max(0, Number(client.config.maxRetries)) }
+      : {}),
+    ...(isBrowser ? { dangerouslyAllowBrowser: true } : {}),
   });
 
   return client.openai;

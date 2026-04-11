@@ -141,6 +141,7 @@ Optional parameters:
 - `mode`
 - `orgId`
 - `projectId`
+- `maxRetries`
 - `pricing`
 
 ### Direct OpenAI + backend persistence mode
@@ -349,18 +350,193 @@ for await (const delta of sdk.runStream({
 
 ### 6. Text to speech for read-aloud
 
-Fastest setup (no backend endpoint required): browser-native read-aloud + word highlighting.
+OpenAI-backed examples first (minimal to advanced), then browser-native examples.
+
+Mode quick guide:
+- `data`: pass one precomputed payload (`audio_base64`, `mime_type`, `words`). Best when you already have full audio ready.
+- `dataSource`: provide a function that returns one timed payload per chunk request. Best for progressive/background chunk loading.
+- `endpoint`: built-in HTTP mode where `attachReadAloud` calls your API route per request/chunk.
+
+#### OpenAI: `data` (minimal, direct SDK)
 
 ```js
-import { attachReadAloud } from "@kigathi/ai-agents";
+import { createClient, attachReadAloud, extractReadAloudText } from "@kigathi/ai-agents";
 
+const sdk = createClient({ apiKey: process.env.OPENAI_API_KEY });
+const text = extractReadAloudText("#blog-content");
+const speech = await sdk.tts.speak({ text });
+
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  data: speech,
+});
+```
+
+#### OpenAI: `data` (minimal, via API)
+
+```js
+const speech = await fetch("/api/read-aloud", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ text: "Read me aloud." }),
+}).then((response) => response.json());
+
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  data: speech,
+});
+```
+
+#### OpenAI: `dataSource` (minimal, direct SDK)
+
+```js
+import { createClient, attachReadAloud } from "@kigathi/ai-agents";
+
+const sdk = createClient({
+  apiKey: process.env.OPENAI_API_KEY,
+  maxRetries: 0, // avoids hidden client-level retry duplication in demos
+});
+
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  dataSource: async ({ text }) => {
+    return await sdk.tts.speak({ text });
+  },
+});
+```
+
+#### OpenAI: `dataSource` (minimal, via API)
+
+```js
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  dataSource: async ({ text, chunk_index, total_chunks, instructions }) => {
+    const response = await fetch("/api/read-aloud", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, chunk_index, total_chunks, instructions }),
+    });
+    if (!response.ok) throw new Error(`Chunk request failed: ${response.status}`);
+    return response.json();
+  },
+});
+```
+
+#### OpenAI: `endpoint` (minimal)
+
+```js
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  endpoint: "/api/read-aloud",
+});
+```
+
+If you want to disable timed auto-scroll, pass `autoScroll: false`.
+
+#### OpenAI: fully descriptive examples
+
+`sdk.tts.speak(...)` is server-only because it requires an API key.
+
+```js
+const speech = await sdk.tts.speak({
+  text: "This is a quick read-aloud example.",
+  instructions: "Read in a confident, professional tone.",
+  model: "gpt-4o-mini-tts",
+  voice: "alloy",
+  format: "mp3",
+  chunking: "auto",
+  maxChunkChars: 1600,
+  maxTotalChars: 120000,
+  includeWordTimings: true,
+});
+```
+
+```js
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  endpoint: "/api/read-aloud",
+  instructions: "Custom narration instructions...",
+  highlight: {
+    mode: "css",
+    color: "#fde68a",
+    textColor: "inherit",
+    radius: "0.6em",
+    padding: "0.04em 0.24em",
+  },
+  progressive: {
+    enabled: true,
+    maxChunkChars: 1600,
+    prefetchAhead: 1,
+    retryCount: 0,
+    retryDelayMs: 700,
+  },
+  autoScroll: {
+    enabled: true,
+    behavior: "smooth",
+    block: "center",
+    marginRatio: 0.24,
+    throttleMs: 96,
+  },
+});
+```
+
+For this repo's SvelteKit demo, direct `dataSource` is wired in `articles/[slug]/+page.svelte` using `PUBLIC_OPENAI_API_KEY` (demo-only).
+Warning: browser key mode exposes your key in client traffic/devtools and must not be used in production.
+
+Retry note:
+- If you see repeated identical calls to `/v1/audio/speech`, check retry layers.
+- OpenAI client retries can be controlled with `createClient({ maxRetries })`.
+- `attachReadAloud` progressive retries are explicit (`progressive.retryCount`) and can be traced with `debugHook`.
+
+Default minimal profile:
+- `maxChunkChars: 1600` (global default)
+- `maxRetries: 0` (global client default)
+- `progressive.retryCount: 0` (global read-aloud default)
+
+Override defaults (production resilience):
+
+```js
+const sdk = createClient({
+  apiKey: process.env.OPENAI_API_KEY,
+  maxRetries: 2,
+});
+
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  endpoint: "/api/read-aloud",
+  progressive: {
+    maxChunkChars: 2200,
+    retryCount: 2,
+  },
+});
+```
+
+```js
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  endpoint: "/api/read-aloud",
+  debugHook: (event) => console.debug("read-aloud", event),
+});
+```
+
+#### Browser API: minimal
+
+```js
 attachReadAloud({
   content: "#blog-content",
   trigger: "#read-aloud-trigger",
 });
 ```
 
-Defaults are built in and can be customized:
+#### Browser API: fully descriptive options
 
 ```js
 import { attachReadAloud, READ_ALOUD_DEFAULTS } from "@kigathi/ai-agents/browser";
@@ -372,14 +548,14 @@ attachReadAloud({
   trigger: "#read-aloud-trigger",
   instructions: "Custom narration instructions...",
   speechOptions: {
-    voiceName: "Samantha", // default
-    lang: "en-US",         // default
-    rate: 0.96,            // default
-    pitch: 1.0,            // default
-    volume: 1.0,           // default
+    voiceName: "Samantha",
+    lang: "en-US",
+    rate: 0.96,
+    pitch: 1.0,
+    volume: 1.0,
   },
   highlight: {
-    mode: "span",              // default ("css" is also supported)
+    mode: "span",
     color: "#fde68a",
     textColor: "#0f172a",
     radius: "0.6em",
@@ -388,47 +564,16 @@ attachReadAloud({
 });
 ```
 
-Optional speech tuning in browser mode:
+You can extract readable text from content using the same parser as `attachReadAloud()`:
 
 ```js
-attachReadAloud({
-  content: "#blog-content",
-  trigger: "#read-aloud-trigger",
-  speechOptions: {
-    lang: "en-US",
-    rate: 1,
-    pitch: 1,
-    volume: 1,
-    voiceName: "Samantha",
-  },
-});
+import { extractReadAloudText } from "@kigathi/ai-agents/browser";
+const text = extractReadAloudText("#blog-content");
 ```
 
-Server-side OpenAI TTS (higher quality voice + model control):
-
-```js
-const speech = await sdk.tts.speak({
-  text: "This is a quick read-aloud example.",
-  voice: "alloy",
-  model: "gpt-4o-mini-tts",
-  format: "mp3",
-});
-
-console.log(speech.audio_base64);
-console.log(speech.words);
-```
-
-If you want browser `attachReadAloud()` to use OpenAI-generated audio/timings, pass an endpoint:
-
-```js
-import { attachReadAloud } from "@kigathi/ai-agents";
-
-attachReadAloud({
-  content: "#blog-content",
-  trigger: "#read-aloud-trigger",
-  endpoint: "/api/read-aloud",
-});
-```
+Source precedence is deterministic: `data` > `dataSource` > `endpoint`.
+Re-read in timed mode resets playback to the beginning.
+For long endpoint/dataSource text, progressive playback starts chunk 0 first and prefetches following chunks.
 
 Add a highlight style:
 
@@ -438,6 +583,10 @@ Add a highlight style:
   color: inherit;
 }
 ```
+
+Timed read-aloud (`endpoint`, `dataSource`, or `data`) always uses non-mutating CSS highlights for stability.
+Timed read-aloud auto-scroll defaults to enabled and follows active highlighting in the nearest scroll container (falls back to window).
+Progressive mode applies to `endpoint` and `dataSource`; `data` mode remains single-payload.
 
 ## Complete minimal working example
 
@@ -514,14 +663,19 @@ const sdk = createClient({
 
 app.post("/api/read-aloud", async (req, res) => {
   try {
-    const { text } = req.body || {};
+    const { text, chunk_index, total_chunks, instructions } = req.body || {};
     const speech = await sdk.tts.speak({
       text,
+      instructions,
+      chunking: "auto", // default
+      maxChunkChars: 1600,
+      maxTotalChars: 120000,
       voice: "alloy",
       model: "gpt-4o-mini-tts",
       format: "mp3",
     });
 
+    // chunk_index/total_chunks/instructions are optional metadata from progressive clients.
     res.json(speech);
   } catch (error) {
     res.status(500).json({ error: error.message || "Failed to generate read-aloud audio." });
@@ -611,5 +765,19 @@ All three use `@kigathi/ai-agents` in direct mode with backend persistence so Op
 - You can pass either an agent name/id or a full agent object to `run()`.
 - If proxy mode cannot find a local agent, it will try to resolve the agent from the backend.
 - `sdk.tts.speak()` is direct-mode only (requires `apiKey`) and returns `audio_base64`, `mime_type`, and optional word timings.
+- For large text, `sdk.tts.speak()` supports automatic chunking (`chunking: "auto"`) and merges chunk audio/timings into one payload.
 - `attachReadAloud()` works without any endpoint by default (browser speech synthesis) and does not mutate your content DOM.
 - `attachReadAloud({ endpoint })` switches to server/OpenAI-backed audio + timestamps.
+- `attachReadAloud({ data })` accepts pre-fetched TTS payloads (`audio_base64`, `mime_type`, `words`) directly.
+- `attachReadAloud({ dataSource })` lets you provide your own async timed source while retaining built-in progressive chunk orchestration; it accepts full timed payloads.
+- `extractReadAloudText(content)` returns readable text from a selector/DOM element using the same content parsing as `attachReadAloud()`.
+- Source precedence is deterministic: `data` > `dataSource` > `endpoint`.
+- Migration note: timed mode (`endpoint`/`data`) now uses CSS highlights for stability and does not use span-wrapping.
+- Auto-scroll can be toggled with a boolean shorthand (`autoScroll: false` / `autoScroll: true`) or configured via object options (`autoScroll.enabled`, `autoScroll.behavior`, `autoScroll.block`, `autoScroll.marginRatio`, `autoScroll.throttleMs`).
+- Progressive options in `attachReadAloud`: `progressive.enabled`, `progressive.maxChunkChars`, `progressive.prefetchAhead`, `progressive.retryCount`, `progressive.retryDelayMs`.
+- You can trace progressive chunk retries with `attachReadAloud({ debugHook: (event) => ... })`.
+- Client retry behavior for OpenAI direct calls is configurable via `createClient({ maxRetries })`.
+- Default minimal tuning: `maxChunkChars` is `1600`, client `maxRetries` is `0`, and progressive `retryCount` is `0`.
+- Progressive playback is enabled for long endpoint/dataSource timed text by default (chunk 0 starts first, next chunks prefetch in background, boundary waits/retries if needed).
+- In timed mode (`endpoint`, `dataSource`, or `data`), highlighting is CSS-based (DOM remains unwrapped) and strict accuracy-first: no synthetic/interpolated fallback timing is used.
+- If synced timing words are unavailable/invalid, timed highlight does not run and an explicit timing error is surfaced.

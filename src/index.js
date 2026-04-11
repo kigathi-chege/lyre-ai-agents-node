@@ -3,7 +3,10 @@ import { createAgent as createAgentImpl, registerTool as registerToolImpl } from
 import { speak as speakTts } from "./core/tts.js";
 import { runDirect, runStreamDirect } from "./modes/direct.js";
 import { runProxy, runStreamProxy } from "./modes/proxy.js";
-import { attachReadAloud as attachReadAloudImpl } from "./browser/readaloud.js";
+import {
+  attachReadAloud as attachReadAloudImpl,
+  extractReadAloudText as extractReadAloudTextImpl,
+} from "./browser/readaloud.js";
 export { READ_ALOUD_DEFAULTS } from "./browser/readaloud.js";
 import { sanitizeRichHtml as sanitizeRichHtmlImpl } from "./sanitize.js";
 
@@ -17,6 +20,7 @@ export function createClient(config = {}) {
       apiKey: config.apiKey,
       orgId: config.orgId,
       projectId: config.projectId,
+      maxRetries: config.maxRetries ?? 0,
       mode,
       pricing: config.pricing || DEFAULT_PRICING,
     },
@@ -75,6 +79,10 @@ export async function* runStream(clientOrSdk, params) {
 
 export function attachReadAloud(params) {
   return attachReadAloudImpl(params);
+}
+
+export function extractReadAloudText(content) {
+  return extractReadAloudTextImpl(content);
 }
 
 export function sanitizeRichHtml(input) {
