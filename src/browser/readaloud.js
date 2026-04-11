@@ -61,10 +61,15 @@ const DEFAULT_SPEECH_OPTIONS = {
 };
 const DEFAULT_HIGHLIGHT_OPTIONS = {
   mode: "span",
+  renderer: "css",
   color: "#fde68a",
+  guessedColor: "#fdba74",
   textColor: "inherit",
   radius: "0.5em",
   padding: "0.02em 0.22em",
+  foregroundFillOpacity: 0.14,
+  foregroundBorderWidth: "1.5px",
+  foregroundBorderStyle: "solid",
 };
 const DEFAULT_AUTOSCROLL_OPTIONS = {
   enabled: false,
@@ -80,6 +85,12 @@ const DEFAULT_PROGRESSIVE_OPTIONS = {
   retryCount: 0,
   retryDelayMs: 700,
 };
+const DEFAULT_GUESSING_OPTIONS = {
+  mode: "aggressive",
+  strength: 0.45,
+  lookahead: 12,
+  minConfidence: 0.2,
+};
 
 export const READ_ALOUD_DEFAULTS = Object.freeze({
   instructions: DEFAULT_TTS_INSTRUCTIONS,
@@ -87,6 +98,7 @@ export const READ_ALOUD_DEFAULTS = Object.freeze({
   highlight: Object.freeze({ ...DEFAULT_HIGHLIGHT_OPTIONS }),
   autoScroll: Object.freeze({ ...DEFAULT_AUTOSCROLL_OPTIONS }),
   progressive: Object.freeze({ ...DEFAULT_PROGRESSIVE_OPTIONS }),
+  guessing: Object.freeze({ ...DEFAULT_GUESSING_OPTIONS }),
 });
 
 export function extractReadAloudText(content) {
@@ -247,10 +259,41 @@ function createRangeForWord(segments, word) {
   return range;
 }
 
+const NUMBER_WORDS = {
+  "0": "zero",
+  "1": "one",
+  "2": "two",
+  "3": "three",
+  "4": "four",
+  "5": "five",
+  "6": "six",
+  "7": "seven",
+  "8": "eight",
+  "9": "nine",
+  "10": "ten",
+  "11": "eleven",
+  "12": "twelve",
+  "13": "thirteen",
+  "14": "fourteen",
+  "15": "fifteen",
+  "16": "sixteen",
+  "17": "seventeen",
+  "18": "eighteen",
+  "19": "nineteen",
+  "20": "twenty",
+};
+
 function normalizeWordToken(value) {
-  return String(value || "")
+  const token = String(value || "")
     .toLowerCase()
-    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, "");
+    .replace(/[^a-z0-9]+/gi, "");
+  if (!token) return "";
+  if (NUMBER_WORDS[token]) return NUMBER_WORDS[token];
+  const ordinalMatch = token.match(/^(\d+)(st|nd|rd|th)$/i);
+  if (ordinalMatch && NUMBER_WORDS[ordinalMatch[1]]) {
+    return NUMBER_WORDS[ordinalMatch[1]];
+  }
+  return token;
 }
 
 function toTimingValue(value) {
@@ -258,7 +301,58 @@ function toTimingValue(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function findAlignedMatch(textNorm, timedNorm, textIndex, timedIndex, lookahead = 8) {
+function isOneEditAway(left, right) {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const leftLen = left.length;
+  const rightLen = right.length;
+  if (Math.abs(leftLen - rightLen) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < leftLen && j < rightLen) {
+    if (left[i] === right[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    edits += 1;
+    if (edits > 1) return false;
+    if (leftLen > rightLen) {
+      i += 1;
+    } else if (rightLen > leftLen) {
+      j += 1;
+    } else {
+      i += 1;
+      j += 1;
+    }
+  }
+  if (i < leftLen || j < rightLen) edits += 1;
+  return edits <= 1;
+}
+
+function isApproximateTokenMatch(textToken, timedToken, guessingPolicy) {
+  if (!guessingPolicy.allowApproximateGuess) return false;
+  if (!textToken || !timedToken || textToken === timedToken) return false;
+  if (textToken.includes(timedToken) || timedToken.includes(textToken)) {
+    return Math.min(textToken.length, timedToken.length) >= 4;
+  }
+  if (textToken.startsWith(timedToken) || timedToken.startsWith(textToken)) {
+    return Math.min(textToken.length, timedToken.length) >= 4;
+  }
+  const minLength = Math.min(textToken.length, timedToken.length);
+  if (minLength < 4) return false;
+  return isOneEditAway(textToken, timedToken);
+}
+
+function findAlignedMatch(
+  textNorm,
+  timedNorm,
+  textIndex,
+  timedIndex,
+  lookahead = 8,
+  guessingPolicy = DEFAULT_GUESSING_OPTIONS,
+) {
   for (let distance = 1; distance <= lookahead; distance += 1) {
     for (let textOffset = 0; textOffset <= distance; textOffset += 1) {
       const timedOffset = distance - textOffset;
@@ -273,7 +367,12 @@ function findAlignedMatch(textNorm, timedNorm, textIndex, timedIndex, lookahead 
 
       const textToken = textNorm[candidateTextIndex];
       const timedToken = timedNorm[candidateTimedIndex];
-      if (textToken && timedToken && textToken === timedToken) {
+      if (
+        textToken &&
+        timedToken &&
+        (textToken === timedToken ||
+          isApproximateTokenMatch(textToken, timedToken, guessingPolicy))
+      ) {
         return {
           textIndex: candidateTextIndex,
           timedIndex: candidateTimedIndex,
@@ -287,26 +386,46 @@ function findAlignedMatch(textNorm, timedNorm, textIndex, timedIndex, lookahead 
 
 function assignTiming(word, start, end) {
   const safeStart = Math.max(0, Number(start) || 0);
-  const safeEnd = Math.max(safeStart, Number(end) || safeStart);
+  const safeEnd = Math.max(safeStart + 0.02, Number(end) || safeStart);
   word.start_time = safeStart;
   word.end_time = safeEnd;
 }
 
-function alignTimedWordsToText(textWords, timingWords) {
+function alignTimedWordsToText(textWords, timingWords, guessingPolicy = DEFAULT_GUESSING_OPTIONS) {
   const aligned = textWords.map((word) => ({
     ...word,
     start_time: null,
     end_time: null,
     timed_text: word.text,
+    is_guessed: false,
   }));
 
   if (!aligned.length || !timingWords.length) {
-    return aligned;
+    return {
+      words: aligned,
+      diagnostics: {
+        guess_mode: guessingPolicy.mode,
+        guess_strength: guessingPolicy.strength,
+        lookahead: guessingPolicy.lookahead,
+        min_confidence: guessingPolicy.minConfidence,
+        strict_matches: 0,
+        guessed_matches: 0,
+        dropped_text: aligned.length,
+        dropped_timing: timingWords.length,
+        confidence: 0,
+        guessed_enabled: false,
+        guessed_reason: "no_source_words",
+      },
+    };
   }
 
   const textNorm = textWords.map((word) => normalizeWordToken(word.text));
   const timedNorm = timingWords.map((word) => normalizeWordToken(word.word));
   const matches = [];
+  let strictMatches = 0;
+  let guessedMatches = 0;
+  let droppedText = 0;
+  let droppedTiming = 0;
 
   let textIndex = 0;
   let timedIndex = 0;
@@ -316,7 +435,92 @@ function alignTimedWordsToText(textWords, timingWords) {
     const currentTimed = timedNorm[timedIndex];
 
     if (currentText && currentTimed && currentText === currentTimed) {
-      matches.push({ textIndex, timedIndex });
+      matches.push({ textIndex, timedIndex, isGuessed: false });
+      strictMatches += 1;
+      textIndex += 1;
+      timedIndex += 1;
+      continue;
+    }
+
+    const timingSplitMatch =
+      guessingPolicy.allowGuesses &&
+      guessingPolicy.allowSplitMergeGuess &&
+      timedIndex + 1 < timedNorm.length &&
+      currentText &&
+      `${currentTimed}${timedNorm[timedIndex + 1]}` === currentText;
+    if (timingSplitMatch) {
+      matches.push({
+        textIndex,
+        timedIndex,
+        timedEndIndex: timedIndex + 1,
+        isGuessed: true,
+      });
+      guessedMatches += 1;
+      textIndex += 1;
+      timedIndex += 2;
+      continue;
+    }
+
+    const textSplitMatch =
+      guessingPolicy.allowGuesses &&
+      guessingPolicy.allowSplitMergeGuess &&
+      textIndex + 1 < textNorm.length &&
+      currentTimed &&
+      `${currentText}${textNorm[textIndex + 1]}` === currentTimed;
+    if (textSplitMatch) {
+      matches.push({ textIndex, timedIndex, isGuessed: true });
+      matches.push({ textIndex: textIndex + 1, timedIndex, isGuessed: true });
+      guessedMatches += 2;
+      textIndex += 2;
+      timedIndex += 1;
+      continue;
+    }
+
+    const approximateMatch =
+      guessingPolicy.allowGuesses &&
+      isApproximateTokenMatch(currentText, currentTimed, guessingPolicy);
+    if (approximateMatch) {
+      matches.push({ textIndex, timedIndex, isGuessed: true });
+      guessedMatches += 1;
+      textIndex += 1;
+      timedIndex += 1;
+      continue;
+    }
+
+    const nextTextMatchesCurrentTiming =
+      guessingPolicy.allowGuesses &&
+      guessingPolicy.allowSingleStepGuess &&
+      textIndex + 1 < textNorm.length &&
+      textNorm[textIndex + 1] &&
+      textNorm[textIndex + 1] === currentTimed;
+    if (nextTextMatchesCurrentTiming) {
+      matches.push({ textIndex, timedIndex, isGuessed: true });
+      guessedMatches += 1;
+      textIndex += 1;
+      continue;
+    }
+
+    const currentTextMatchesNextTiming =
+      timedIndex + 1 < timedNorm.length &&
+      timedNorm[timedIndex + 1] &&
+      currentText === timedNorm[timedIndex + 1];
+    if (currentTextMatchesNextTiming) {
+      droppedTiming += 1;
+      timedIndex += 1;
+      continue;
+    }
+
+    const bridgeMatch =
+      guessingPolicy.allowGuesses &&
+      guessingPolicy.allowBridgeGuess &&
+      textIndex + 1 < textNorm.length &&
+      timedIndex + 1 < timedNorm.length &&
+      textNorm[textIndex + 1] &&
+      timedNorm[timedIndex + 1] &&
+      textNorm[textIndex + 1] === timedNorm[timedIndex + 1];
+    if (bridgeMatch) {
+      matches.push({ textIndex, timedIndex, isGuessed: true });
+      guessedMatches += 1;
       textIndex += 1;
       timedIndex += 1;
       continue;
@@ -327,27 +531,186 @@ function alignTimedWordsToText(textWords, timingWords) {
       timedNorm,
       textIndex,
       timedIndex,
-      8,
+      guessingPolicy.lookahead,
+      guessingPolicy,
     );
     if (!alignedMatch) {
+      droppedText += 1;
       textIndex += 1;
       continue;
     }
 
+    droppedText += Math.max(0, alignedMatch.textIndex - textIndex);
+    droppedTiming += Math.max(0, alignedMatch.timedIndex - timedIndex);
     textIndex = alignedMatch.textIndex;
     timedIndex = alignedMatch.timedIndex;
   }
 
-  for (const match of matches) {
+  droppedText += Math.max(0, textNorm.length - textIndex);
+  droppedTiming += Math.max(0, timedNorm.length - timedIndex);
+
+  const totalMatches = strictMatches + guessedMatches;
+  const strictConfidence = totalMatches > 0 ? strictMatches / totalMatches : 0;
+  const useGuessedMatches =
+    guessingPolicy.allowGuesses && strictConfidence >= guessingPolicy.minConfidence;
+  const effectiveMatches = useGuessedMatches
+    ? matches
+    : matches.filter((match) => !match.isGuessed);
+  if (!useGuessedMatches) {
+    guessedMatches = 0;
+  }
+
+  for (const match of effectiveMatches) {
     const timedWord = timingWords[match.timedIndex];
+    const timedEndWord = timingWords[match.timedEndIndex ?? match.timedIndex];
     const start = toTimingValue(timedWord?.start);
-    const end = toTimingValue(timedWord?.end);
+    const end = toTimingValue(timedEndWord?.end);
     if (start === null || end === null || end < start) continue;
     assignTiming(aligned[match.textIndex], start, end);
     aligned[match.textIndex].timed_text = String(timedWord?.word || "").trim();
+    aligned[match.textIndex].is_guessed = Boolean(match.isGuessed);
   }
 
-  return aligned;
+  let filledGapWords = 0;
+  if (guessingPolicy.allowGapFill) {
+    const anchors = [];
+    for (let i = 0; i < aligned.length; i += 1) {
+      const start = toTimingValue(aligned[i]?.start_time);
+      const end = toTimingValue(aligned[i]?.end_time);
+      if (start === null || end === null || end < start) continue;
+      anchors.push({ index: i, start, end });
+    }
+
+    for (let i = 0; i + 1 < anchors.length; i += 1) {
+      const left = anchors[i];
+      const right = anchors[i + 1];
+      const missing = right.index - left.index - 1;
+      if (missing <= 0) continue;
+
+      const gapStart = left.end;
+      const gapEnd = right.start;
+      if (!Number.isFinite(gapStart) || !Number.isFinite(gapEnd) || gapEnd <= gapStart) {
+        continue;
+      }
+
+      const slice = (gapEnd - gapStart) / (missing + 1);
+      if (!(slice > 0)) continue;
+
+      for (let offset = 1; offset <= missing; offset += 1) {
+        const targetIndex = left.index + offset;
+        const target = aligned[targetIndex];
+        if (!target) continue;
+        const existingStart = toTimingValue(target.start_time);
+        const existingEnd = toTimingValue(target.end_time);
+        if (existingStart !== null && existingEnd !== null && existingEnd >= existingStart) {
+          continue;
+        }
+        assignTiming(target, gapStart + slice * (offset - 1), gapStart + slice * offset);
+        target.is_guessed = true;
+        target.timed_text = target.timed_text || target.text;
+        filledGapWords += 1;
+      }
+    }
+
+    if (anchors.length >= 1) {
+      const durations = anchors
+        .map((anchor) => Math.max(0, anchor.end - anchor.start))
+        .filter((duration) => duration > 0);
+      const avgDuration = durations.length
+        ? durations.reduce((sum, value) => sum + value, 0) / durations.length
+        : 0.28;
+      const safeStep = Math.max(0.08, Math.min(0.6, avgDuration));
+
+      const first = anchors[0];
+      if (first.index > 0) {
+        let cursor = Math.max(0, first.start - safeStep * first.index);
+        for (let i = 0; i < first.index; i += 1) {
+          const target = aligned[i];
+          const existingStart = toTimingValue(target?.start_time);
+          const existingEnd = toTimingValue(target?.end_time);
+          if (existingStart !== null && existingEnd !== null && existingEnd >= existingStart) {
+            continue;
+          }
+          const start = cursor;
+          const end = Math.min(first.start, start + safeStep);
+          assignTiming(target, start, end);
+          target.is_guessed = true;
+          target.timed_text = target.timed_text || target.text;
+          filledGapWords += 1;
+          cursor = end;
+        }
+      }
+
+      const last = anchors[anchors.length - 1];
+      if (last.index < aligned.length - 1) {
+        let cursor = last.end;
+        for (let i = last.index + 1; i < aligned.length; i += 1) {
+          const target = aligned[i];
+          const existingStart = toTimingValue(target?.start_time);
+          const existingEnd = toTimingValue(target?.end_time);
+          if (existingStart !== null && existingEnd !== null && existingEnd >= existingStart) {
+            continue;
+          }
+          const start = cursor;
+          const end = start + safeStep;
+          assignTiming(target, start, end);
+          target.is_guessed = true;
+          target.timed_text = target.timed_text || target.text;
+          filledGapWords += 1;
+          cursor = end;
+        }
+      }
+    } else {
+      const firstTiming = timingWords.length ? timingWords[0] : null;
+      const lastTiming = timingWords.length ? timingWords[timingWords.length - 1] : null;
+      const start = toTimingValue(firstTiming?.start);
+      const end = toTimingValue(lastTiming?.end);
+      if (
+        start !== null &&
+        end !== null &&
+        end > start &&
+        aligned.length > 0
+      ) {
+        const slice = (end - start) / aligned.length;
+        if (slice > 0) {
+          for (let i = 0; i < aligned.length; i += 1) {
+            const target = aligned[i];
+            assignTiming(target, start + slice * i, start + slice * (i + 1));
+            target.is_guessed = true;
+            target.timed_text = target.timed_text || target.text;
+            filledGapWords += 1;
+          }
+        }
+      }
+    }
+  }
+
+  const matched = strictMatches + guessedMatches;
+  const confidence = matched
+    ? strictMatches / matched
+    : 0;
+
+  return {
+    words: aligned,
+    diagnostics: {
+      guess_mode: guessingPolicy.mode,
+      guess_strength: guessingPolicy.strength,
+      lookahead: guessingPolicy.lookahead,
+      min_confidence: guessingPolicy.minConfidence,
+      strict_matches: strictMatches,
+      guessed_matches: guessedMatches,
+      dropped_text: droppedText,
+      dropped_timing: droppedTiming,
+      confidence,
+      guessed_enabled: useGuessedMatches,
+      filled_gap_words: filledGapWords,
+      guessed_reason: useGuessedMatches
+        ? "enabled"
+        : guessingPolicy.allowGuesses
+          ? "confidence_gate"
+          : "mode_off",
+    },
+  };
 }
 
 function resolveActiveMappedWordIndex(words, currentTime, fromIndex = 0) {
@@ -363,10 +726,25 @@ function resolveActiveMappedWordIndex(words, currentTime, fromIndex = 0) {
     return { start, end };
   }
 
+  function resolveEffectiveEnd(index, timing) {
+    let nextStart = null;
+    for (let i = index + 1; i < words.length; i += 1) {
+      const nextTiming = resolveTiming(words[i]);
+      if (!nextTiming) continue;
+      nextStart = nextTiming.start;
+      break;
+    }
+    if (nextStart === null) {
+      return timing.end;
+    }
+    return Math.max(timing.end, nextStart);
+  }
+
   for (let i = safeFromIndex; i < words.length; i += 1) {
     const timing = resolveTiming(words[i]);
     if (!timing) continue;
-    if (safeTime >= timing.start && safeTime < timing.end) {
+    const effectiveEnd = resolveEffectiveEnd(i, timing);
+    if (safeTime >= timing.start && safeTime < effectiveEnd) {
       return i;
     }
     if (safeTime < timing.start) {
@@ -377,10 +755,11 @@ function resolveActiveMappedWordIndex(words, currentTime, fromIndex = 0) {
   for (let i = Math.min(safeFromIndex, words.length - 1); i >= 0; i -= 1) {
     const timing = resolveTiming(words[i]);
     if (!timing) continue;
-    if (safeTime >= timing.start && safeTime < timing.end) {
+    const effectiveEnd = resolveEffectiveEnd(i, timing);
+    if (safeTime >= timing.start && safeTime < effectiveEnd) {
       return i;
     }
-    if (safeTime > timing.end) {
+    if (safeTime > effectiveEnd) {
       return -1;
     }
   }
@@ -475,9 +854,18 @@ function normalizeSpeechOptions(input = {}) {
 function normalizeHighlightOptions(input = {}) {
   return {
     mode: input.mode === "css" ? "css" : DEFAULT_HIGHLIGHT_OPTIONS.mode,
+    renderer:
+      input.renderer === "overlay-foreground"
+        ? "overlay-foreground"
+        : input.renderer === "overlay"
+          ? "overlay"
+          : DEFAULT_HIGHLIGHT_OPTIONS.renderer,
     color: isNonEmptyString(input.color)
       ? input.color
       : DEFAULT_HIGHLIGHT_OPTIONS.color,
+    guessedColor: isNonEmptyString(input.guessedColor)
+      ? input.guessedColor
+      : DEFAULT_HIGHLIGHT_OPTIONS.guessedColor,
     textColor: isNonEmptyString(input.textColor)
       ? input.textColor
       : DEFAULT_HIGHLIGHT_OPTIONS.textColor,
@@ -487,6 +875,15 @@ function normalizeHighlightOptions(input = {}) {
     padding: isNonEmptyString(input.padding)
       ? input.padding
       : DEFAULT_HIGHLIGHT_OPTIONS.padding,
+    foregroundFillOpacity: Number.isFinite(Number(input.foregroundFillOpacity))
+      ? Math.max(0, Math.min(1, Number(input.foregroundFillOpacity)))
+      : DEFAULT_HIGHLIGHT_OPTIONS.foregroundFillOpacity,
+    foregroundBorderWidth: isNonEmptyString(input.foregroundBorderWidth)
+      ? input.foregroundBorderWidth
+      : DEFAULT_HIGHLIGHT_OPTIONS.foregroundBorderWidth,
+    foregroundBorderStyle: isNonEmptyString(input.foregroundBorderStyle)
+      ? input.foregroundBorderStyle
+      : DEFAULT_HIGHLIGHT_OPTIONS.foregroundBorderStyle,
   };
 }
 
@@ -542,6 +939,101 @@ function normalizeProgressiveOptions(input = {}) {
     retryDelayMs: Number.isFinite(Number(source.retryDelayMs))
       ? Math.max(120, Math.min(5000, Number(source.retryDelayMs)))
       : DEFAULT_PROGRESSIVE_OPTIONS.retryDelayMs,
+  };
+}
+
+function clampNumber(value, min, max, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function normalizeGuessingOptions(input = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  const mode =
+    source.mode === "off" ||
+    source.mode === "balanced" ||
+    source.mode === "aggressive" ||
+    source.mode === "conservative"
+      ? source.mode
+      : DEFAULT_GUESSING_OPTIONS.mode;
+  const strength = clampNumber(source.strength, 0, 1, DEFAULT_GUESSING_OPTIONS.strength);
+
+  const modeDefaults = {
+    off: {
+      lookahead: 4,
+      minConfidence: 1,
+      allowSingleStepGuess: false,
+      allowBridgeGuess: false,
+      allowSplitMergeGuess: false,
+      allowApproximateGuess: false,
+      allowGapFill: false,
+    },
+    conservative: {
+      lookahead: 8,
+      minConfidence: 0.45,
+      allowSingleStepGuess: true,
+      allowBridgeGuess: true,
+      allowSplitMergeGuess: true,
+      allowApproximateGuess: false,
+      allowGapFill: false,
+    },
+    balanced: {
+      lookahead: 10,
+      minConfidence: 0.32,
+      allowSingleStepGuess: true,
+      allowBridgeGuess: true,
+      allowSplitMergeGuess: true,
+      allowApproximateGuess: false,
+      allowGapFill: true,
+    },
+    aggressive: {
+      lookahead: 12,
+      minConfidence: 0.2,
+      allowSingleStepGuess: true,
+      allowBridgeGuess: true,
+      allowSplitMergeGuess: true,
+      allowApproximateGuess: true,
+      allowGapFill: true,
+    },
+  }[mode];
+
+  const lookaheadFromStrength = modeDefaults.lookahead + Math.round((strength - 0.45) * 8);
+  const lookahead = clampNumber(source.lookahead, 2, 24, lookaheadFromStrength);
+  const minConfidenceFromStrength = clampNumber(
+    modeDefaults.minConfidence - (strength - 0.45) * 0.18,
+    0,
+    1,
+    modeDefaults.minConfidence,
+  );
+  const minConfidence = clampNumber(
+    source.minConfidence,
+    0,
+    1,
+    minConfidenceFromStrength,
+  );
+
+  return {
+    mode,
+    strength,
+    lookahead,
+    minConfidence,
+    allowGuesses: mode !== "off",
+    allowSingleStepGuess:
+      modeDefaults.allowSingleStepGuess &&
+      (mode === "aggressive" || mode === "balanced" || strength >= 0.2),
+    allowBridgeGuess:
+      modeDefaults.allowBridgeGuess &&
+      (mode === "aggressive" || mode === "balanced" || strength >= 0.4),
+    allowSplitMergeGuess:
+      modeDefaults.allowSplitMergeGuess &&
+      (mode === "aggressive" || mode === "balanced" || strength >= 0.35),
+    allowApproximateGuess:
+      modeDefaults.allowApproximateGuess &&
+      (mode === "aggressive" || strength >= 0.75),
+    allowGapFill:
+      modeDefaults.allowGapFill &&
+      (mode === "aggressive" || mode === "balanced" || strength >= 0.45),
   };
 }
 
@@ -708,6 +1200,7 @@ export function attachReadAloud({
   requestInit = {},
   speechOptions = {},
   highlight = {},
+  guessing = {},
   autoScroll = {},
   progressive = {},
   debugHook = null,
@@ -726,6 +1219,14 @@ export function attachReadAloud({
 
   const payloadData = normalizeReadAloudData(data);
   const hasData = Boolean(payloadData);
+  const requestedRenderer =
+    highlight && typeof highlight === "object" && highlight.renderer === "css"
+      ? "css"
+      : highlight && typeof highlight === "object" && highlight.renderer === "overlay-foreground"
+        ? "overlay-foreground"
+      : highlight && typeof highlight === "object" && highlight.renderer === "overlay"
+        ? "overlay"
+        : null;
   const resolvedDataSource = normalizeReadAloudDataSource(dataSource);
   const hasDataSource = Boolean(resolvedDataSource);
   const hasEndpoint = isNonEmptyString(endpoint);
@@ -736,10 +1237,15 @@ export function attachReadAloud({
   const resolvedSpeechOptions = normalizeSpeechOptions(speechOptions);
   const userHighlight = normalizeHighlightOptions(highlight);
   const resolvedHighlight = hasTimedSource
-    ? { ...userHighlight, mode: "css" }
+    ? {
+        ...userHighlight,
+        mode: "css",
+        renderer: requestedRenderer || "overlay",
+      }
     : userHighlight;
   const resolvedAutoScroll = normalizeAutoScrollOptions(autoScroll, hasTimedSource);
   const resolvedProgressive = normalizeProgressiveOptions(progressive);
+  const resolvedGuessing = normalizeGuessingOptions(guessing);
   const resolvedDebugHook =
     typeof debugHook === "function" ? debugHook : null;
 
@@ -755,6 +1261,7 @@ export function attachReadAloud({
   let progressiveChunks = [];
   let progressiveChunkData = [];
   let progressiveChunkPromises = new Map();
+  let progressiveChunkDurationEstimates = [];
   let progressiveCurrentChunkIndex = 0;
   let progressiveChunkError = null;
   let progressiveBoundaryLoading = false;
@@ -769,6 +1276,18 @@ export function attachReadAloud({
   let localUtterance = null;
   let localPaused = false;
   let activeWrapper = null;
+  let activeOverlayHosts = {
+    background: null,
+    foreground: null,
+  };
+  let activeOverlayBoxes = {
+    background: [],
+    foreground: [],
+  };
+  let liftedOverlayChildren = [];
+  let activeRenderer = resolvedHighlight.renderer;
+  let lastEffectiveRenderer = null;
+  let styleElement = null;
   let lastScrollTs = 0;
   const nearestScrollContainer = findNearestScrollContainer(contentElement);
 
@@ -780,6 +1299,12 @@ export function attachReadAloud({
       // ignore debug hook errors
     }
   }
+
+  emitDebug({
+    type: "renderer_selected",
+    renderer: activeRenderer,
+    timed: hasTimedSource,
+  });
 
   function clearTimedError() {
     timedErrorCode = null;
@@ -821,9 +1346,261 @@ export function attachReadAloud({
 
   function clearHighlight() {
     CSS.highlights.delete(highlightName);
+    if (activeOverlayHosts.background) {
+      activeOverlayHosts.background.style.display = "none";
+    }
+    if (activeOverlayHosts.foreground) {
+      activeOverlayHosts.foreground.style.display = "none";
+    }
     unwrapActiveWrapper();
     activeWordIndex = -1;
     emitWordChange(-1);
+  }
+
+  function setActiveRenderer(nextRenderer, reason = "unspecified") {
+    const normalized =
+      nextRenderer === "css"
+        ? "css"
+        : nextRenderer === "overlay-foreground"
+          ? "overlay-foreground"
+          : "overlay";
+    if (activeRenderer === normalized) return;
+    const previous = activeRenderer;
+    activeRenderer = normalized;
+    emitDebug({
+      type: "renderer_fallback",
+      from: previous,
+      to: normalized,
+      reason,
+    });
+  }
+
+  function ensureStyleElement() {
+    if (styleElement || typeof document === "undefined") return;
+    const element = document.createElement("style");
+    element.setAttribute("data-readaloud-highlight-style", highlightName);
+    element.textContent = `::highlight(${highlightName}) { background-color: var(--readaloud-highlight-color, transparent); color: var(--readaloud-highlight-text-color, inherit); }`;
+    document.head.appendChild(element);
+    styleElement = element;
+  }
+
+  function parsePaddingValues(value) {
+    const source = String(value || "").trim() || "0";
+    const tokens = source.split(/\s+/).filter(Boolean);
+    if (!tokens.length) return ["0", "0", "0", "0"];
+    if (tokens.length === 1) return [tokens[0], tokens[0], tokens[0], tokens[0]];
+    if (tokens.length === 2) return [tokens[0], tokens[1], tokens[0], tokens[1]];
+    if (tokens.length === 3) return [tokens[0], tokens[1], tokens[2], tokens[1]];
+    return [tokens[0], tokens[1], tokens[2], tokens[3]];
+  }
+
+  function colorWithAlpha(color, alpha) {
+    const normalizedAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+    const value = String(color || "").trim();
+    if (!value) return color;
+
+    const rgbMatch = value.match(
+      /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/i,
+    );
+    if (rgbMatch) {
+      const r = Math.max(0, Math.min(255, Number(rgbMatch[1]) || 0));
+      const g = Math.max(0, Math.min(255, Number(rgbMatch[2]) || 0));
+      const b = Math.max(0, Math.min(255, Number(rgbMatch[3]) || 0));
+      return `rgba(${r}, ${g}, ${b}, ${normalizedAlpha})`;
+    }
+
+    const hexMatch = value.match(/^#([a-f0-9]{3}|[a-f0-9]{6})$/i);
+    if (hexMatch) {
+      let hex = hexMatch[1];
+      if (hex.length === 3) {
+        hex = hex
+          .split("")
+          .map((ch) => `${ch}${ch}`)
+          .join("");
+      }
+      const r = Number.parseInt(hex.slice(0, 2), 16);
+      const g = Number.parseInt(hex.slice(2, 4), 16);
+      const b = Number.parseInt(hex.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${normalizedAlpha})`;
+    }
+
+    return color;
+  }
+
+  function isPaintedBackground(style) {
+    if (!style) return false;
+    const bgImage = String(style.backgroundImage || "").trim();
+    if (bgImage && bgImage !== "none") return true;
+    const bg = String(style.backgroundColor || "").trim().toLowerCase();
+    if (!bg || bg === "transparent") return false;
+    const rgba = bg.match(/^rgba\(([^)]+)\)$/i);
+    if (rgba) {
+      const parts = rgba[1].split(",").map((part) => part.trim());
+      const alpha = Number(parts[3]);
+      return Number.isFinite(alpha) ? alpha > 0 : true;
+    }
+    return bg !== "rgba(0, 0, 0, 0)";
+  }
+
+  function hasPaintedBackground(range) {
+    let element =
+      range.startContainer?.nodeType === Node.ELEMENT_NODE
+        ? range.startContainer
+        : range.startContainer?.parentElement || null;
+    while (element && element !== contentElement) {
+      if (isPaintedBackground(window.getComputedStyle(element))) {
+        return true;
+      }
+      element = element.parentElement;
+    }
+    return false;
+  }
+
+  function resolveTimedRendererForRange(range) {
+    if (activeRenderer === "css") return "css";
+    if (activeRenderer === "overlay-foreground") return "overlay-foreground";
+    if (hasPaintedBackground(range)) {
+      if (lastEffectiveRenderer !== "overlay-foreground") {
+        emitDebug({
+          type: "renderer_switch",
+          from: lastEffectiveRenderer || "overlay",
+          to: "overlay-foreground",
+          reason: "painted_background",
+        });
+      }
+      lastEffectiveRenderer = "overlay-foreground";
+      return "overlay-foreground";
+    }
+    if (lastEffectiveRenderer !== "overlay") {
+      emitDebug({
+        type: "renderer_switch",
+        from: lastEffectiveRenderer || "overlay-foreground",
+        to: "overlay",
+        reason: "transparent_background",
+      });
+    }
+    lastEffectiveRenderer = "overlay";
+    return "overlay";
+  }
+
+  function ensureOverlayHost(layer = "background") {
+    if (activeOverlayHosts[layer]) return activeOverlayHosts[layer];
+    const host = document.createElement("div");
+    host.setAttribute("data-readaloud-overlay", `${highlightName}-${layer}`);
+    host.style.position = "absolute";
+    host.style.left = "0";
+    host.style.top = "0";
+    host.style.width = "100%";
+    host.style.height = "100%";
+    host.style.pointerEvents = "none";
+    host.style.zIndex = layer === "foreground" ? "3" : "0";
+    host.style.display = "none";
+
+    const computed = window.getComputedStyle(contentElement);
+    if (computed.position === "static") {
+      contentElement.style.position = "relative";
+    }
+    if (computed.isolation === "auto") {
+      contentElement.style.isolation = "isolate";
+    }
+    if (layer === "background") {
+      // Keep text/content above background overlay highlight planes.
+      liftedOverlayChildren = [];
+      for (const child of Array.from(contentElement.children)) {
+        if (child === host) continue;
+        if (child.hasAttribute("data-readaloud-overlay")) continue;
+        const childComputed = window.getComputedStyle(child);
+        const previousPosition = child.style.position;
+        const previousZIndex = child.style.zIndex;
+        if (childComputed.position === "static") {
+          child.style.position = "relative";
+        }
+        child.style.zIndex = "1";
+        liftedOverlayChildren.push({
+          element: child,
+          position: previousPosition,
+          zIndex: previousZIndex,
+        });
+      }
+      contentElement.insertBefore(host, contentElement.firstChild);
+      if (contentElement.firstChild !== host) {
+        throw new Error("overlay layering is unavailable for this container");
+      }
+    } else {
+      contentElement.appendChild(host);
+    }
+    activeOverlayHosts[layer] = host;
+    return host;
+  }
+
+  function renderOverlayHighlight(range, isGuessed, variant = "overlay") {
+    const layer = variant === "overlay-foreground" ? "foreground" : "background";
+    const inactiveLayer = layer === "foreground" ? "background" : "foreground";
+    if (activeOverlayHosts[inactiveLayer]) {
+      activeOverlayHosts[inactiveLayer].style.display = "none";
+    }
+    const host = ensureOverlayHost(layer);
+    const contentRect = contentElement.getBoundingClientRect();
+    const rects = Array.from(range.getClientRects());
+    const [padTop, padRight, padBottom, padLeft] = parsePaddingValues(
+      resolvedHighlight.padding,
+    );
+    const bgColor = isGuessed
+      ? resolvedHighlight.guessedColor
+      : resolvedHighlight.color;
+
+    host.style.display = rects.length ? "block" : "none";
+    while (activeOverlayBoxes[layer].length < rects.length) {
+      const box = document.createElement("div");
+      box.style.position = "absolute";
+      box.style.pointerEvents = "none";
+      box.style.boxSizing = "border-box";
+      host.appendChild(box);
+      activeOverlayBoxes[layer].push(box);
+    }
+
+    for (let i = 0; i < activeOverlayBoxes[layer].length; i += 1) {
+      const box = activeOverlayBoxes[layer][i];
+      const rect = rects[i];
+      if (!rect) {
+        box.style.display = "none";
+        continue;
+      }
+
+      const top = rect.top - contentRect.top + contentElement.scrollTop;
+      const left = rect.left - contentRect.left + contentElement.scrollLeft;
+      box.style.display = "block";
+      box.style.backgroundColor = variant === "overlay-foreground"
+        ? colorWithAlpha(bgColor, resolvedHighlight.foregroundFillOpacity)
+        : bgColor;
+      box.style.opacity = "1";
+      box.style.border = variant === "overlay-foreground"
+        ? `${resolvedHighlight.foregroundBorderWidth} ${resolvedHighlight.foregroundBorderStyle} ${bgColor}`
+        : "none";
+      box.style.boxShadow = variant === "overlay-foreground"
+        ? `0 0 0 0.5px ${bgColor}`
+        : "none";
+      box.style.borderRadius = resolvedHighlight.radius;
+      box.style.top = `calc(${top}px - ${padTop})`;
+      box.style.left = `calc(${left}px - ${padLeft})`;
+      box.style.width = `calc(${rect.width}px + ${padLeft} + ${padRight})`;
+      box.style.height = `calc(${rect.height}px + ${padTop} + ${padBottom})`;
+    }
+  }
+
+  function applyCssTextHighlight(range, isGuessed) {
+    ensureStyleElement();
+    contentElement.style.setProperty(
+      "--readaloud-highlight-color",
+      activeRenderer === "css"
+        ? (isGuessed ? resolvedHighlight.guessedColor : resolvedHighlight.color)
+        : "transparent",
+    );
+    contentElement.style.setProperty(
+      "--readaloud-highlight-text-color",
+      resolvedHighlight.textColor || "inherit",
+    );
+    CSS.highlights.set(highlightName, new Highlight(range));
   }
 
   function maybeAutoScroll(range) {
@@ -889,6 +1666,59 @@ export function attachReadAloud({
     return offset;
   }
 
+  function estimateDurationFromText(text) {
+    const charCount = String(text || "").length;
+    if (!charCount) return 0.4;
+    // Around 15 chars/sec spoken pace with floor/ceiling guard.
+    return Math.max(0.6, Math.min(90, charCount / 15));
+  }
+
+  function getProgressiveChunkEstimatedDuration(index) {
+    const loadedDuration = Number(progressiveChunkData[index]?.duration);
+    if (Number.isFinite(loadedDuration) && loadedDuration > 0) {
+      return loadedDuration;
+    }
+    const estimate = Number(progressiveChunkDurationEstimates[index]);
+    if (Number.isFinite(estimate) && estimate > 0) {
+      return estimate;
+    }
+    return estimateDurationFromText(progressiveChunks[index]?.text || "");
+  }
+
+  function getProgressiveEstimatedTotalDuration() {
+    if (!progressiveMode || !progressiveChunks.length) {
+      const duration = Number(audio.duration);
+      return Number.isFinite(duration) && duration > 0 ? duration : 0;
+    }
+    let total = 0;
+    for (let i = 0; i < progressiveChunks.length; i += 1) {
+      total += getProgressiveChunkEstimatedDuration(i);
+    }
+    return total;
+  }
+
+  function resolveProgressiveTarget(globalSeconds) {
+    const clampedGlobal = Math.max(0, Number(globalSeconds) || 0);
+    let offset = 0;
+    for (let i = 0; i < progressiveChunks.length; i += 1) {
+      const duration = getProgressiveChunkEstimatedDuration(i);
+      const end = offset + duration;
+      if (clampedGlobal <= end || i === progressiveChunks.length - 1) {
+        return {
+          chunkIndex: i,
+          localTime: Math.max(0, clampedGlobal - offset),
+          globalTime: clampedGlobal,
+        };
+      }
+      offset = end;
+    }
+    return {
+      chunkIndex: Math.max(0, progressiveChunks.length - 1),
+      localTime: 0,
+      globalTime: clampedGlobal,
+    };
+  }
+
   function applyHighlight(index) {
     if (index < 0 || index >= mappedWords.length) {
       if (activeWordIndex !== -1) {
@@ -927,10 +1757,22 @@ export function attachReadAloud({
         range.surroundContents(wrapper);
         activeWrapper = wrapper;
       } catch {
-        CSS.highlights.set(highlightName, new Highlight(range));
+        applyCssTextHighlight(range, false);
       }
     } else {
-      CSS.highlights.set(highlightName, new Highlight(range));
+      const isGuessed = Boolean(word.is_guessed);
+      const timedRenderer = resolveTimedRendererForRange(range);
+      if (timedRenderer === "overlay" || timedRenderer === "overlay-foreground") {
+        try {
+          renderOverlayHighlight(range, isGuessed, timedRenderer);
+        } catch (error) {
+          const reason = /layering/i.test(String(error?.message || ""))
+            ? "overlay_layering_unavailable"
+            : "overlay_render_failed";
+          setActiveRenderer("css", reason);
+        }
+      }
+      applyCssTextHighlight(range, isGuessed);
     }
 
     activeWordIndex = index;
@@ -972,11 +1814,18 @@ export function attachReadAloud({
         start_time: null,
         end_time: null,
         timed_text: word.text,
+        is_guessed: false,
       }));
       return;
     }
 
-    mappedWords = alignTimedWordsToText(textMap.words, timedWords);
+    const aligned = alignTimedWordsToText(textMap.words, timedWords, resolvedGuessing);
+    mappedWords = aligned.words;
+    emitDebug({
+      type: "alignment_stats",
+      scope: "full",
+      ...aligned.diagnostics,
+    });
     normalizeMappedTimingsToAudioDuration(mappedWords, audio.duration);
   }
 
@@ -986,6 +1835,7 @@ export function attachReadAloud({
       start_time: null,
       end_time: null,
       timed_text: word.text,
+      is_guessed: false,
     }));
   }
 
@@ -1012,6 +1862,7 @@ export function attachReadAloud({
           timeOffset + end,
         );
         mappedWords[targetIndex].timed_text = chunkWord.timed_text || mappedWords[targetIndex].text;
+        mappedWords[targetIndex].is_guessed = Boolean(chunkWord.is_guessed);
       }
 
     }
@@ -1179,7 +2030,16 @@ export function attachReadAloud({
       const chunkTextWords = getChunkWordSlice(chunk);
       const audioSrc = buildAudioSource(payload.mime_type, payload.audio_base64);
       const duration = await decodeChunkDuration(audioSrc);
-      const alignedWords = alignTimedWordsToText(chunkTextWords, payload.words);
+      const aligned = alignTimedWordsToText(chunkTextWords, payload.words, resolvedGuessing);
+      const alignedWords = aligned.words;
+      emitDebug({
+        type: "alignment_stats",
+        scope: "chunk",
+        source: hasDataSource ? "dataSource" : "endpoint",
+        chunk_index: chunk.index,
+        total_chunks: progressiveChunks.length,
+        ...aligned.diagnostics,
+      });
       if (!hasUsableMappedTimings(alignedWords)) {
         setTimedError(
           "timing_unavailable",
@@ -1207,6 +2067,9 @@ export function attachReadAloud({
       };
 
       progressiveChunkData[index] = built;
+      progressiveChunkDurationEstimates[index] = duration > 0
+        ? duration
+        : getProgressiveChunkEstimatedDuration(index);
       recomputeProgressiveMappedWords();
       return built;
     })();
@@ -1269,6 +2132,7 @@ export function attachReadAloud({
       progressiveChunks = [];
       progressiveChunkData = [];
       progressiveChunkPromises = new Map();
+      progressiveChunkDurationEstimates = [];
       progressiveCurrentChunkIndex = 0;
 
       let payload = payloadData;
@@ -1283,6 +2147,9 @@ export function attachReadAloud({
         if (shouldUseProgressive) {
           progressiveMode = true;
           progressiveChunks = maybeChunks;
+          progressiveChunkDurationEstimates = maybeChunks.map((chunk) =>
+            estimateDurationFromText(chunk.text),
+          );
           initializeProgressiveMappedWords();
           await setAudioToProgressiveChunk(0);
           scheduleProgressivePrefetch();
@@ -1501,6 +2368,64 @@ export function attachReadAloud({
     }
   }
 
+  async function seek(seconds) {
+    if (!hasTimedSource) {
+      throw new Error("ReadAloudError: seeking is only available for timed read-aloud modes.");
+    }
+
+    await load();
+    const wasPlaying = !audio.paused;
+    stopSync();
+    audio.pause();
+
+    if (!progressiveMode) {
+      const duration = Number(audio.duration);
+      const clamped = Number.isFinite(duration) && duration > 0
+        ? Math.max(0, Math.min(seconds, duration))
+        : Math.max(0, Number(seconds) || 0);
+      audio.currentTime = clamped;
+      const index = resolveActiveMappedWordIndex(mappedWords, clamped, 0);
+      if (index >= 0) {
+        lastKnownIndex = index;
+      }
+      applyHighlight(index);
+      if (wasPlaying) {
+        await audio.play();
+        if (hasUsableMappedTimings(mappedWords)) {
+          rafId = window.requestAnimationFrame(syncHighlight);
+        }
+      }
+      return;
+    }
+
+    const target = resolveProgressiveTarget(seconds);
+    loading = true;
+    progressiveBoundaryLoading = true;
+    try {
+      await setAudioToProgressiveChunk(target.chunkIndex);
+      const chunkDuration = Number(audio.duration);
+      const localTime = Number.isFinite(chunkDuration) && chunkDuration > 0
+        ? Math.max(0, Math.min(target.localTime, Math.max(0, chunkDuration - 0.02)))
+        : Math.max(0, target.localTime);
+      audio.currentTime = localTime;
+      const index = resolveActiveMappedWordIndex(mappedWords, target.globalTime, 0);
+      if (index >= 0) {
+        lastKnownIndex = index;
+      }
+      applyHighlight(index);
+      scheduleProgressivePrefetch();
+      if (wasPlaying) {
+        await audio.play();
+        if (hasUsableMappedTimings(mappedWords)) {
+          rafId = window.requestAnimationFrame(syncHighlight);
+        }
+      }
+    } finally {
+      progressiveBoundaryLoading = false;
+      loading = false;
+    }
+  }
+
   function refresh() {
     textMap = buildTextMap(contentElement);
     if (progressiveMode) {
@@ -1553,6 +2478,24 @@ export function attachReadAloud({
     }
     audio.removeAttribute("src");
     audio.load();
+    for (const layer of ["background", "foreground"]) {
+      const host = activeOverlayHosts[layer];
+      if (host?.parentElement) {
+        host.parentElement.removeChild(host);
+      }
+    }
+    activeOverlayHosts = { background: null, foreground: null };
+    activeOverlayBoxes = { background: [], foreground: [] };
+    for (const lifted of liftedOverlayChildren) {
+      if (!lifted?.element) continue;
+      lifted.element.style.position = lifted.position;
+      lifted.element.style.zIndex = lifted.zIndex;
+    }
+    liftedOverlayChildren = [];
+    if (styleElement?.parentElement) {
+      styleElement.parentElement.removeChild(styleElement);
+    }
+    styleElement = null;
     wordChangeHandlers = [];
   }
 
@@ -1610,6 +2553,7 @@ export function attachReadAloud({
     play,
     pause,
     toggle,
+    seek,
     refresh,
     onWordChange,
     destroy,
@@ -1629,6 +2573,14 @@ export function attachReadAloud({
         loading,
         playing: !audio.paused,
         activeWordIndex,
+        currentTime: progressiveMode
+          ? getProgressiveChunkOffset(progressiveCurrentChunkIndex) + audio.currentTime
+          : audio.currentTime,
+        duration: progressiveMode
+          ? getProgressiveEstimatedTotalDuration()
+          : Number.isFinite(Number(audio.duration))
+            ? Number(audio.duration)
+            : 0,
         progressive: progressiveMode
           ? {
               currentChunkIndex: progressiveCurrentChunkIndex,

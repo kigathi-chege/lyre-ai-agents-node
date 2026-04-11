@@ -483,6 +483,12 @@ attachReadAloud({
     marginRatio: 0.24,
     throttleMs: 96,
   },
+  guessing: {
+    mode: "aggressive", // off | conservative | balanced | aggressive
+    strength: 0.45, // 0..1
+    lookahead: 12,
+    minConfidence: 0.2,
+  },
 });
 ```
 
@@ -584,9 +590,29 @@ Add a highlight style:
 }
 ```
 
-Timed read-aloud (`endpoint`, `dataSource`, or `data`) always uses non-mutating CSS highlights for stability.
+Timed read-aloud (`endpoint`, `dataSource`, or `data`) is non-mutating and defaults to the `overlay` renderer for full styling (`radius`, `padding`, guessed-word color). Overlay highlight boxes are rendered behind text. Set `highlight.renderer: "css"` to force CSS Custom Highlight mode.
 Timed read-aloud auto-scroll defaults to enabled and follows active highlighting in the nearest scroll container (falls back to window).
 Progressive mode applies to `endpoint` and `dataSource`; `data` mode remains single-payload.
+When content has painted backgrounds (for example `blockquote` panels), timed overlay rendering automatically switches to `overlay-foreground` for visibility.
+
+You can force foreground overlay globally:
+
+```js
+attachReadAloud({
+  content: "#blog-content",
+  trigger: "#read-aloud-trigger",
+  endpoint: "/api/read-aloud",
+  highlight: {
+    mode: "css",
+    renderer: "overlay-foreground",
+    color: "#fde68a",
+    guessedColor: "#fdba74",
+    foregroundFillOpacity: 0.14,
+    foregroundBorderWidth: "1.5px",
+    foregroundBorderStyle: "solid",
+  },
+});
+```
 
 ## Complete minimal working example
 
@@ -772,12 +798,16 @@ All three use `@kigathi/ai-agents` in direct mode with backend persistence so Op
 - `attachReadAloud({ dataSource })` lets you provide your own async timed source while retaining built-in progressive chunk orchestration; it accepts full timed payloads.
 - `extractReadAloudText(content)` returns readable text from a selector/DOM element using the same content parsing as `attachReadAloud()`.
 - Source precedence is deterministic: `data` > `dataSource` > `endpoint`.
-- Migration note: timed mode (`endpoint`/`data`) now uses CSS highlights for stability and does not use span-wrapping.
+- Migration note: timed mode (`endpoint`/`data`/`dataSource`) is non-mutating and does not use span-wrapping. Default timed renderer is `overlay`; optional fallback is `highlight.renderer: "css"`.
 - Auto-scroll can be toggled with a boolean shorthand (`autoScroll: false` / `autoScroll: true`) or configured via object options (`autoScroll.enabled`, `autoScroll.behavior`, `autoScroll.block`, `autoScroll.marginRatio`, `autoScroll.throttleMs`).
 - Progressive options in `attachReadAloud`: `progressive.enabled`, `progressive.maxChunkChars`, `progressive.prefetchAhead`, `progressive.retryCount`, `progressive.retryDelayMs`.
 - You can trace progressive chunk retries with `attachReadAloud({ debugHook: (event) => ... })`.
 - Client retry behavior for OpenAI direct calls is configurable via `createClient({ maxRetries })`.
 - Default minimal tuning: `maxChunkChars` is `1600`, client `maxRetries` is `0`, and progressive `retryCount` is `0`.
 - Progressive playback is enabled for long endpoint/dataSource timed text by default (chunk 0 starts first, next chunks prefetch in background, boundary waits/retries if needed).
-- In timed mode (`endpoint`, `dataSource`, or `data`), highlighting is CSS-based (DOM remains unwrapped) and strict accuracy-first: no synthetic/interpolated fallback timing is used.
+- In timed mode (`endpoint`, `dataSource`, or `data`), highlighting is strict accuracy-first (DOM remains unwrapped): no synthetic/interpolated fallback timing is used.
+- Timed highlight renderer options: `highlight.renderer` (`"overlay"` default, `"overlay-foreground"` for top-layer bordered highlight, or `"css"`), `highlight.color`, `highlight.guessedColor`, `highlight.textColor`, `highlight.radius`, `highlight.padding`, `highlight.foregroundFillOpacity`, `highlight.foregroundBorderWidth`, `highlight.foregroundBorderStyle`.
+- Guessing options for timing drift recovery: `guessing.mode` (`"off" | "conservative" | "balanced" | "aggressive"`), `guessing.strength` (`0..1`), `guessing.lookahead`, `guessing.minConfidence`.
+- `overlay` mode auto-switches per word to `overlay-foreground` in painted-background regions for visibility; `overlay-foreground` can also be selected globally.
+- CSS renderer fallback supports color/text emphasis, while overlay/overlay-foreground renderers are recommended for full visual control.
 - If synced timing words are unavailable/invalid, timed highlight does not run and an explicit timing error is surfaced.
