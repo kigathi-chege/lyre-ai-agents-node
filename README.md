@@ -451,6 +451,7 @@ const speech = await sdk.tts.speak({
   format: "mp3",
   chunking: "auto",
   maxChunkChars: 1600,
+  internalMaxChunkChars: 4096,
   maxTotalChars: 120000,
   includeWordTimings: true,
 });
@@ -502,6 +503,7 @@ Retry note:
 
 Default minimal profile:
 - `maxChunkChars: 1600` (global default)
+- `internalMaxChunkChars: 4096` (internal TTS per-request safety cap)
 - `maxRetries: 0` (global client default)
 - `progressive.retryCount: 0` (global read-aloud default)
 
@@ -695,6 +697,7 @@ app.post("/api/read-aloud", async (req, res) => {
       instructions,
       chunking: "auto", // default
       maxChunkChars: 1600,
+      internalMaxChunkChars: 4096, // internal per-request safety cap
       maxTotalChars: 120000,
       voice: "alloy",
       model: "gpt-4o-mini-tts",
@@ -792,6 +795,7 @@ All three use `@kigathi/ai-agents` in direct mode with backend persistence so Op
 - If proxy mode cannot find a local agent, it will try to resolve the agent from the backend.
 - `sdk.tts.speak()` is direct-mode only (requires `apiKey`) and returns `audio_base64`, `mime_type`, and optional word timings.
 - For large text, `sdk.tts.speak()` supports automatic chunking (`chunking: "auto"`) and merges chunk audio/timings into one payload.
+- `sdk.tts.speak()` also applies an internal per-request safety split (`internalMaxChunkChars`, default `4096`) so each OpenAI speech call stays within the input cap.
 - `attachReadAloud()` works without any endpoint by default (browser speech synthesis) and does not mutate your content DOM.
 - `attachReadAloud({ endpoint })` switches to server/OpenAI-backed audio + timestamps.
 - `attachReadAloud({ data })` accepts pre-fetched TTS payloads (`audio_base64`, `mime_type`, `words`) directly.
@@ -803,7 +807,7 @@ All three use `@kigathi/ai-agents` in direct mode with backend persistence so Op
 - Progressive options in `attachReadAloud`: `progressive.enabled`, `progressive.maxChunkChars`, `progressive.prefetchAhead`, `progressive.retryCount`, `progressive.retryDelayMs`.
 - You can trace progressive chunk retries with `attachReadAloud({ debugHook: (event) => ... })`.
 - Client retry behavior for OpenAI direct calls is configurable via `createClient({ maxRetries })`.
-- Default minimal tuning: `maxChunkChars` is `1600`, client `maxRetries` is `0`, and progressive `retryCount` is `0`.
+- Default minimal tuning: `maxChunkChars` is `1600`, `internalMaxChunkChars` is `4096`, client `maxRetries` is `0`, and progressive `retryCount` is `0`.
 - Progressive playback is enabled for long endpoint/dataSource timed text by default (chunk 0 starts first, next chunks prefetch in background, boundary waits/retries if needed).
 - In timed mode (`endpoint`, `dataSource`, or `data`), highlighting is strict accuracy-first (DOM remains unwrapped): no synthetic/interpolated fallback timing is used.
 - Timed highlight renderer options: `highlight.renderer` (`"overlay"` default, `"overlay-foreground"` for top-layer bordered highlight, or `"css"`), `highlight.color`, `highlight.guessedColor`, `highlight.textColor`, `highlight.radius`, `highlight.padding`, `highlight.foregroundFillOpacity`, `highlight.foregroundBorderWidth`, `highlight.foregroundBorderStyle`.

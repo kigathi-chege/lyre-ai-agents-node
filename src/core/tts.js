@@ -7,6 +7,7 @@ const DEFAULT_VOICE = "alloy";
 const DEFAULT_FORMAT = "mp3";
 const DEFAULT_CHUNKING = "auto";
 const DEFAULT_MAX_CHUNK_CHARS = 1600;
+const DEFAULT_INTERNAL_MAX_CHUNK_CHARS = 4096;
 const DEFAULT_MAX_TOTAL_CHARS = 120000;
 const DEFAULT_TTS_INSTRUCTIONS =
   "Read in a professional tone. Sound human and natural. Respect punctuation, phrasing, and natural sentence breaks as if you understand the content.";
@@ -297,11 +298,26 @@ export async function speak(client, params = {}) {
   const format = params.response_format || params.format || DEFAULT_FORMAT;
   const chunking = params.chunking || DEFAULT_CHUNKING;
   const maxChunkChars = Number(params.maxChunkChars) || DEFAULT_MAX_CHUNK_CHARS;
+  const hasCustomInternalMaxChunkChars = params.internalMaxChunkChars != null;
+  const parsedInternalMaxChunkChars = Number(params.internalMaxChunkChars);
+  const internalMaxChunkChars = hasCustomInternalMaxChunkChars
+    ? parsedInternalMaxChunkChars
+    : DEFAULT_INTERNAL_MAX_CHUNK_CHARS;
   const maxTotalChars = Number(params.maxTotalChars) || DEFAULT_MAX_TOTAL_CHARS;
   const includeWordTimings = params.includeWordTimings !== false;
   const transcriptionModel = params.transcriptionModel || DEFAULT_TRANSCRIPTION_MODEL;
   const timingFallbackModel = params.timingFallbackModel || DEFAULT_TIMING_FALLBACK_MODEL;
   const resolvedInstructions = params.instructions || DEFAULT_TTS_INSTRUCTIONS;
+
+  if (
+    !Number.isFinite(internalMaxChunkChars) ||
+    !Number.isInteger(internalMaxChunkChars) ||
+    internalMaxChunkChars < 1
+  ) {
+    throw new Error(
+      `TtsInvalidInternalChunkSizeError: internalMaxChunkChars must be a positive integer (received: ${params.internalMaxChunkChars}).`,
+    );
+  }
 
   if (text.length > maxTotalChars) {
     throw new Error(
@@ -311,11 +327,15 @@ export async function speak(client, params = {}) {
 
   const openai = await getOpenAIClient(client);
   const shouldChunk = chunking === "auto" && text.length > maxChunkChars;
-  const chunks = shouldChunk ? chunkTextBySentence(text, maxChunkChars) : [text];
+  const externalChunks = shouldChunk ? chunkTextBySentence(text, maxChunkChars) : [text];
+  const chunks = externalChunks.flatMap((chunkText) => {
+    if (chunkText.length <= internalMaxChunkChars) return [chunkText];
+    return chunkTextBySentence(chunkText, internalMaxChunkChars);
+  });
 
   if (format !== "mp3" && chunks.length > 1) {
     throw new Error(
-      `TtsChunkingFormatError: chunking currently supports only mp3 output (received: ${format}).`,
+      `TtsChunkingFormatError: multi-part synthesis currently supports only mp3 output (received: ${format}).`,
     );
   }
 
